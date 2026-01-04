@@ -1,0 +1,110 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Infrastruttura Automatica per Challenge Finale AWS
+
+Parameters:
+  KeyName:
+    Description: Nome della Key Pair esistente per SSH (es. vockey)
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: Deve essere il nome di una chiave esistente.
+
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64'
+    Description: Prende in automatico l'ultima AMI Amazon Linux 2023 per questa region.
+
+Resources:
+  # 1. LA RETE (VPC)
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: IaC-VPC
+
+  MyInternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref MyInternetGateway
+
+  MyPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [ 0, !GetAZs '' ] # Prende la prima AZ disponibile
+      Tags:
+        - Key: Name
+          Value: IaC-Subnet-Public
+
+  # Routing (Il navigatore)
+  MyRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+
+  MyRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref MyRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref MyInternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref MyPublicSubnet
+      RouteTableId: !Ref MyRouteTable
+
+  # 2. SICUREZZA (Security Group)
+  WebServerSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP and SSH
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+  # 3. COMPUTE (Il Server)
+  MyWebInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: !Ref LatestAmiId
+      KeyName: !Ref KeyName
+      SubnetId: !Ref MyPublicSubnet
+      SecurityGroupIds:
+        - !Ref WebServerSG
+      Tags:
+        - Key: Name
+          Value: Server-Automatico-IaC
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y httpd
+          systemctl start httpd
+          systemctl enable httpd
+          echo "<h1>MISSIONE COMPIUTA</h1>" > /var/www/html/index.html
+          echo "<p>Questa infrastruttura e' stata creata col codice.</p>" >> /var/www/html/index.html
+
+# 4. OUTPUT (Risultato finale)
+Outputs:
+  WebsiteURL:
+    Description: URL del sito web generato
+    Value: !Sub "http://${MyWebInstance.PublicDnsName}"
